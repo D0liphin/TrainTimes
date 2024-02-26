@@ -204,7 +204,8 @@ fn pixels_as_bytes(bytes: &[u16]) -> &[u8] {
 }
 
 fn main2() -> ! {
-    println!("running...");
+    println!("Hello, world! (again)");
+
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
@@ -218,7 +219,7 @@ fn main2() -> ! {
     let dc = io.pins.gpio7.into_push_pull_output();
     let bl = io.pins.gpio15.into_push_pull_output();
     let mut lcd = st7789::St7789 {
-        spi: Spi::new(peripherals.SPI2, 100u32.kHz(), SpiMode::Mode0, &clocks)
+        spi: Spi::new(peripherals.SPI2, 10u32.kHz(), SpiMode::Mode0, &clocks)
             .with_sck(sck)
             .with_mosi(mosi)
             .with_cs(cs),
@@ -228,12 +229,12 @@ fn main2() -> ! {
     lcd.init(&mut delay);
     lcd.set_bl_high();
 
-    let mut red = [0u16; 240 * 2401];
+    let mut red = [0u16; 240 * 241];
     for (i, b) in red.iter_mut().enumerate() {
         *b = 0b11111_000000_11111;
     }
 
-    let mut blue = [0u16; 240 * 240];
+    let mut blue = [0u16; 240 * 241];
     for (i, b) in blue.iter_mut().enumerate() {
         *b = 0b11111_111111_00000;
     }
@@ -249,5 +250,6 @@ fn main2() -> ! {
 
 #[entry]
 fn main() -> ! {
+    println!("hello, world!");
     main2()
 }
