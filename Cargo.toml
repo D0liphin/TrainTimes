@@ -1,0 +1,15 @@
+[package]
+name = "lcdterm"
+version = "0.1.0"
+authors = ["Oli Iliffe <oliver.iliffe@kcl.ac.uk>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+debug = true
+
+[dependencies]
+esp32s3-hal = "0.14.0"
+esp-backtrace = { version = "0.10.0", features = ["esp32s3", "panic-handler", "exception-handler", "print-uart"] }
+esp-println = { version = "0.8.0", features = ["esp32s3"] }
+
