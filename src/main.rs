@@ -1,7 +1,15 @@
+#![feature(trait_alias)]
 #![no_std]
 #![no_main]
 
 use core::mem::transmute;
+
+mod types {
+    use esp32s3_hal::prelude::*;
+
+    /// I'm not quite sure what's going on here -- will leave it as this for now...
+    pub trait OutputPinV2 = _embedded_hal_digital_v2_OutputPin;
+}
 
 use esp32s3_hal::{
     clock::ClockControl,
@@ -13,6 +21,12 @@ use esp32s3_hal::{
 };
 use esp_backtrace as _;
 use esp_println::println;
+use lcd::Rgb16;
+
+use crate::{
+    lcd::Lcd,
+    term::{Char, Term},
+};
 
 /// esp_println, but maybe I want to make it write errors?
 macro_rules! eprintln {
@@ -22,35 +36,32 @@ macro_rules! eprintln {
 }
 
 mod st7789 {
+    use crate::types::OutputPinV2;
     use core::ops::RangeBounds;
 
     use esp32s3_hal::{
         peripherals::SPI2,
-        prelude::{_embedded_hal_blocking_spi_Write, *},
+        prelude::*,
         spi::{master::Spi, FullDuplexMode},
         Delay,
     };
     use esp_println::println;
 
-    pub struct St7789<
-        'a,
-        Dc: _embedded_hal_digital_v2_OutputPin,
-        Bl: _embedded_hal_digital_v2_OutputPin,
-    > {
+    pub struct St7789<'a, Dc: OutputPinV2, Bl: OutputPinV2> {
         pub spi: Spi<'a, SPI2, FullDuplexMode>,
         pub dc: Dc,
         pub bl: Bl,
     }
 
-    impl<'a, Dc: _embedded_hal_digital_v2_OutputPin, Bl: _embedded_hal_digital_v2_OutputPin>
-        St7789<'a, Dc, Bl>
-    {
-        /// SPI write and flush
+    impl<'a, Dc: OutputPinV2, Bl: OutputPinV2> St7789<'a, Dc, Bl> {
+        /// SPI write_bytes
         /// Logs errors -- because what are we going to do anyway?
         pub fn write_bytes(&mut self, bytes: &[u8]) {
-            if let Err(e) = self.spi.write(bytes) {
-                eprintln!("{:?}", e);
-            }
+            self.spi.write(bytes);
+        }
+
+        pub fn flush(&mut self) {
+            _ = self.spi.write(&[]);
         }
 
         pub fn write_command(&mut self, command: u8, data: &[u8]) {
@@ -199,13 +210,326 @@ mod st7789 {
     pub const PWCTR6: u8 = 0xFC;
 }
 
+mod bmp {
+    use esp_println::println;
+
+    use crate::lcd::Rgb16;
+
+    /// Extract the data of a `bmp` image. The assumption is that you know the
+    /// format already, and you just neeed the data. Panics if the BMP is not valid.
+    pub fn bmp_data(bytes: &[u8]) -> &[u8] {
+        // BMP is a little-endian format
+        let offset = u32::from_le_bytes(
+            bytes[10..14]
+                .try_into()
+                .expect("caller asserts this is valid bmp, which always contains a 14 byte header"),
+        ) as usize;
+        &bytes[offset..]
+    }
+
+    #[repr(C)]
+    #[derive(Debug)]
+    pub struct Rgba(u8, u8, u8, u8);
+
+    impl Rgba {
+        /// Converts to RGB565, ignoring alpha completely
+        pub fn to_rgb16(&self) -> Rgb16 {
+            if self.3 == 0 {
+                return Rgb16::IGNORE;
+            }
+
+            Rgb16::from_rgb(self.0, self.1, self.2)
+        }
+    }
+
+    pub fn bytes_as_rgba(bytes: &[u8]) -> &[Rgba] {
+        unsafe { core::slice::from_raw_parts(bytes as *const [u8] as _, bytes.len() / 4) }
+    }
+
+    pub fn bytes_as_rgb16(bytes: &[u8], buf: &mut [Rgb16]) {
+        let rgbas = bytes_as_rgba(bytes);
+        for (i, color) in rgbas.iter().enumerate() {
+            println!("{i}");
+            buf[i] = color.to_rgb16();
+        }
+    }
+}
+
+mod lcd {
+    use core::fmt::Debug;
+
+    use crate::st7789::{St7789, RAMWR};
+    use crate::types::OutputPinV2;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    /// This should be opaque -- we actually disallow 0xffff as a value, which
+    /// we reserve as "transparent". `0b11111_111111_11110` is black. The
+    /// original color does not exist.
+    pub struct Rgb16(u8, u8);
+
+    impl From<u16> for Rgb16 {
+        fn from(value: u16) -> Self {
+            let [first, second] = value.to_be_bytes();
+            Rgb16(first, second)
+        }
+    }
+
+    impl Debug for Rgb16 {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "{:b}", u16::from_be_bytes([self.0, self.1]))
+        }
+    }
+
+    impl Rgb16 {
+        pub const IGNORE: Self = Self(0xff, 0xff - 1);
+        pub const BLACK: Self = Self(0xff, 0xff);
+        pub const WHITE: Self = Self(0x00, 0x00);
+
+        pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+            let r: u16 = (0b11111 * r as u16 / 255) << 11;
+            let g: u16 = (0b111111 * g as u16 / 255) << 5;
+            let b: u16 = 0b11111 * b as u16 / 255;
+
+            let this = Self::from(r | g | b);
+            if this == Self::IGNORE {
+                Self::BLACK
+            } else {
+                this
+            }
+        }
+
+        pub fn as_bytes(buf: &[Rgb16]) -> &[u8] {
+            // SAFETY: safe because Rgb16 is size 2 (repr C) and we resize to
+            // twice the length. This is just a mirror of `buf`, so it can live
+            // for exactly the same lifetime.
+            unsafe { core::slice::from_raw_parts(buf as *const [Rgb16] as _, buf.len() * 2) }
+        }
+
+        pub const fn from_bytes(buf: &[u8]) -> &[Rgb16] {
+            unsafe { core::slice::from_raw_parts(buf as *const [u8] as _, buf.len() / 2) }
+        }
+    }
+
+    pub trait Lcd {
+        /// Set the window, such that subsequent writes will write to this
+        /// region -- this means we also want to set `RAMWR`
+        fn prepare_window(&mut self, x: (u16, u16), y: (u16, u16));
+
+        /// Write a single pixel to the LCD. `rgb` should not be mutated such
+        /// that it will have a visible effect on `rgb`. What we want
+        fn write_rgb(&mut self, rgb: &[Rgb16]);
+    }
+
+    impl<'a, Dc, Bl> Lcd for St7789<'a, Dc, Bl>
+    where
+        Dc: OutputPinV2,
+        Bl: OutputPinV2,
+    {
+        fn prepare_window(&mut self, x: (u16, u16), y: (u16, u16)) {
+            self.set_window(x, y);
+            self.write_commands(&[RAMWR]);
+        }
+
+        fn write_rgb(&mut self, rgb: &[Rgb16]) {
+            self.write_data(Rgb16::as_bytes(rgb));
+        }
+    }
+}
+
+mod lazy_spinlock {
+    use core::{
+        cell::UnsafeCell,
+        mem::MaybeUninit,
+        sync::atomic::{AtomicI8, Ordering},
+    };
+
+    use esp_println::println;
+
+    const UNINIT: i8 = 0;
+    const INIT: i8 = 1;
+    const LOCKED: i8 = 2;
+
+    pub struct LazySpinlock<T, F> {
+        value: UnsafeCell<MaybeUninit<T>>,
+        init: F,
+        state: AtomicI8,
+    }
+
+    unsafe impl<T, F> Sync for LazySpinlock<T, F> {}
+
+    impl<T, F> LazySpinlock<T, F>
+    where
+        F: FnOnce() -> T + Copy,
+    {
+        pub const fn uninit(init: F) -> Self {
+            Self {
+                value: UnsafeCell::new(MaybeUninit::uninit()),
+                init,
+                state: AtomicI8::new(UNINIT),
+            }
+        }
+
+        /// Initialize if not yet init
+        pub fn initialize(&self) {
+            println!("initialize()");
+            loop {
+                println!("loop...");
+                if self.state.load(Ordering::Relaxed) == INIT {
+                    return;
+                }
+
+                // This isn't likely to happen anyway
+                while self.state.load(Ordering::Relaxed) == LOCKED {
+                    println!("looping some more");
+                }
+
+                let result = self.state.compare_exchange(
+                    UNINIT,
+                    LOCKED,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+                // If we fail to lock, someone else is initializing, so let's
+                // just wait for them to do it
+                if result.is_err() {
+                    continue;
+                }
+
+                unsafe {
+                    *self.value.get() = MaybeUninit::new((self.init)());
+                }
+
+                self.state.store(INIT, Ordering::Relaxed);
+            }
+        }
+
+        pub fn is_init(&self) -> bool {
+            self.state.load(Ordering::Relaxed) == INIT
+        }
+
+        pub fn get(&self) -> &T {
+            self.initialize();
+            // SAFETY: we run `self.initialize()` first, so it's going to have
+            // to initialize!
+            unsafe { (*self.value.get()).assume_init_ref() }
+        }
+    }
+}
+
+mod term {
+    use esp32s3_hal::Delay;
+    use esp_println::println;
+
+    use crate::lcd::Lcd;
+    use crate::{lazy_spinlock::LazySpinlock, lcd::Rgb16};
+
+    macro_rules! include_rgb565 {
+        ($path:expr) => {{
+            let bytes = include_bytes!($path);
+            Rgb16::from_bytes(bytes)
+        }};
+    }
+
+    pub static FONT: &[Rgb16] = include_rgb565!("./image/font.rgb565");
+
+    /// Represents a single character on the terminal, a character has a
+    /// background and a foreground color, as well as a value.
+    #[derive(Clone, Copy)]
+    pub struct Char {
+        /// The ascii character at this location, first bit is reserved
+        pub value: u8,
+        // pub foreground: Rgb16,
+        // pub background: Rgb16,
+    }
+
+    impl Char {
+        pub fn is_flushed(&self) -> bool {
+            (self.value & 0b1000_0000) == 0
+        }
+
+        pub fn mark_clogged(&mut self) {
+            self.value |= 0b1000_0000
+        }
+
+        pub fn mark_flushed(&mut self) {
+            self.value &= 0b0111_1111;
+        }
+
+        pub fn value(&self) -> u8 {
+            self.value & 0b0111_1111
+        }
+
+        /// Get a byte array of pixels reperesenting this letter
+        pub fn get_letter(&self) -> &[Rgb16] {
+            let letter_size: usize = 16 * 8;
+            let start = (self.value() - b' ') as usize * letter_size;
+            let start = start as usize;
+            &FONT[start..start + letter_size]
+        }
+
+        pub fn write_foreground(&self, lcd: &mut impl Lcd) {
+            lcd.write_rgb(self.get_letter());
+        }
+    }
+
+    impl Default for Char {
+        fn default() -> Self {
+            Self {
+                value: 0b1000_0000 | b' ',
+                // foreground: Rgb16::WHITE,
+                // background: Rgb16::BLACK,
+            }
+        }
+    }
+
+    pub struct Term<const WIDTH: usize, const HEIGHT: usize> {
+        cells: [[Char; WIDTH]; HEIGHT],
+    }
+
+    impl<const WIDTH: usize, const HEIGHT: usize> Term<WIDTH, HEIGHT> {
+        pub fn new() -> Self {
+            Self {
+                cells: [[Char::default(); WIDTH]; HEIGHT],
+            }
+        }
+
+        pub fn set_char(&mut self, coords: (usize, usize), mut val: Char) {
+            val.mark_clogged();
+            self.cells[coords.1][coords.0] = val;
+        }
+
+        pub fn set_row_vals(&mut self, row: usize, s: &[u8]) {
+            for (&s, c) in s.iter().zip(self.cells[row].iter_mut()) {
+                c.value = s;
+                c.mark_clogged();
+            }
+        }
+
+        pub fn display(&mut self, lcd: &mut impl Lcd) {
+            for (i, row) in self.cells.iter_mut().enumerate() {
+                for (j, c) in row.iter_mut().enumerate() {
+                    if c.is_flushed() {
+                        continue;
+                    }
+                    // TODO: white border
+                    lcd.prepare_window(
+                        ((j * 8) as u16, (j * 8 + 7) as u16),
+                        ((i * 16) as u16, (i * 16 + 15) as u16),
+                    );
+                    c.write_foreground(lcd);
+                    c.mark_flushed();
+                }
+            }
+        }
+    }
+}
+
 fn pixels_as_bytes(bytes: &[u16]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(bytes as *const [u16] as _, bytes.len() * 2) }
 }
 
 fn main2() -> ! {
-    println!("Hello, world! (again)");
-
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
@@ -219,7 +543,7 @@ fn main2() -> ! {
     let dc = io.pins.gpio7.into_push_pull_output();
     let bl = io.pins.gpio15.into_push_pull_output();
     let mut lcd = st7789::St7789 {
-        spi: Spi::new(peripherals.SPI2, 10u32.kHz(), SpiMode::Mode0, &clocks)
+        spi: Spi::new(peripherals.SPI2, 80u32.MHz(), SpiMode::Mode0, &clocks)
             .with_sck(sck)
             .with_mosi(mosi)
             .with_cs(cs),
@@ -229,27 +553,46 @@ fn main2() -> ! {
     lcd.init(&mut delay);
     lcd.set_bl_high();
 
-    let mut red = [0u16; 240 * 241];
-    for (i, b) in red.iter_mut().enumerate() {
-        *b = 0b11111_000000_11111;
+    delay.delay_ms(100u32);
+    let mut term = Term::<30, 15>::new();
+
+    lcd.prepare_window((0, 240), (0, 240));
+    for _ in 0..=240 {
+        lcd.write_rgb(&[Rgb16::WHITE; 240]);
     }
 
-    let mut blue = [0u16; 240 * 241];
-    for (i, b) in blue.iter_mut().enumerate() {
-        *b = 0b11111_111111_00000;
+    let msgs: &[&'static [u8]] = &[
+        &b"if Term::<30, 15>::works(t) {"[..],
+        &b"    println!(\"yippee!\");"[..],
+        &b"}"[..]
+    ];
+    for (i, msg) in msgs.iter().enumerate() {
+        for (j, &b) in msg.iter().enumerate() {
+            term.set_char((j, i), Char { value: b });
+            term.display(&mut lcd);
+        }
     }
 
-    loop {
-        println!("did a loop");
-        lcd.write_pixels(pixels_as_bytes(&red));
-        delay.delay_ms(100u32);
-        lcd.write_pixels(pixels_as_bytes(&blue));
-        delay.delay_ms(100u32);
-    }
+    // let line = concat![
+    //     "hello, world! this line is too long to fit... as a result, I am scrolling it along at a ",
+    //     "relatively slow pace. the other option would be to do this pixel by pixel. this makes the ",
+    //     "code a bit more complicated though, so i'm hesitant! :o "
+    // ].as_bytes();
+
+    // let mut i = 0;
+    // loop {
+    //     delay.delay_ms(100u32);
+    //     term.set_row_vals(0, &line[i..]);
+    //     i = (i + 1) % line.len();
+    //     term.display(&mut lcd);
+    // }
+
+    println!("here");
+    loop {}
 }
 
 #[entry]
 fn main() -> ! {
-    println!("hello, world!");
-    main2()
+    println!("hi");
+    main2();
 }
