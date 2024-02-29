@@ -61,8 +61,6 @@ fn main2() -> ! {
     lcd.init(&mut delay);
     lcd.set_bl_high();
 
-    let mut term = Term::<30, 15>::new();
-
     lcd.prepare_window((0, 240), (0, 240));
     for _ in 0..=240 {
         lcd.write_rgb(&[Rgb16::WHITE; 240]);
@@ -75,24 +73,17 @@ fn main2() -> ! {
     ];
     for (i, msg) in msgs.iter().enumerate() {
         for (j, &b) in msg.iter().enumerate() {
-            term.set_char((j, i), Char { value: b });
-            term.display(&mut lcd);
+            Term::<30, 15>::display_immediately(
+                &mut lcd,
+                (j, i),
+                Char {
+                    value: b,
+                    foreground: Rgb16::WHITE,
+                    background: Rgb16::BLACK,
+                },
+            );
         }
     }
-
-    // let line = concat![
-    //     "hello, world! this line is too long to fit... as a result, I am scrolling it along at a ",
-    //     "relatively slow pace. the other option would be to do this pixel by pixel. this makes the ",
-    //     "code a bit more complicated though, so i'm hesitant! :o "
-    // ].as_bytes();
-
-    // let mut i = 0;
-    // loop {
-    //     delay.delay_ms(100u32);
-    //     term.set_row_vals(0, &line[i..]);
-    //     i = (i + 1) % line.len();
-    //     term.display(&mut lcd);
-    // }
 
     println!("here");
     loop {}

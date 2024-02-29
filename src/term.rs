@@ -19,8 +19,8 @@ pub static FONT: &[u8] = include_bytes!("./image/font.bmi");
 pub struct Char {
     /// The ascii character at this location, first bit is reserved
     pub value: u8,
-    // pub foreground: Rgb16,
-    // pub background: Rgb16,
+    pub foreground: Rgb16,
+    pub background: Rgb16,
 }
 
 impl Char {
@@ -52,14 +52,14 @@ impl Char {
         for (rowi, &row) in letter_bits.iter().enumerate() {
             for offset in 0..8 {
                 if ((0b1000_0000 >> offset) & row) != 0 {
-                    letter[rowi * 8 + offset] = Rgb16::BLACK;
+                    letter[rowi * 8 + offset] = self.foreground;
                 }
             }
         }
     }
 
-    pub fn write_foreground(&self, lcd: &mut impl Lcd) {
-        let mut letter = [Rgb16::WHITE; 8 * 16];
+    pub fn display(&self, lcd: &mut impl Lcd) {
+        let mut letter = [self.background; 8 * 16];
         self.get_letter_pixels(&mut letter);
         lcd.write_rgb(&letter);
     }
@@ -69,8 +69,8 @@ impl Default for Char {
     fn default() -> Self {
         Self {
             value: 0b1000_0000 | b' ',
-            // foreground: Rgb16::WHITE,
-            // background: Rgb16::BLACK,
+            foreground: Rgb16::WHITE,
+            background: Rgb16::BLACK,
         }
     }
 }
@@ -86,12 +86,21 @@ impl<const WIDTH: usize, const HEIGHT: usize> Term<WIDTH, HEIGHT> {
         }
     }
 
-    pub fn set_char(&mut self, coords: (usize, usize), mut val: Char) {
-        val.mark_clogged();
-        self.cells[coords.1][coords.0] = val;
+    pub fn display_immediately(lcd: &mut impl Lcd, (x, y): (usize, usize), mut ch: Char) {
+        ch.mark_flushed();
+        lcd.prepare_window(
+            ((x * 8) as u16, (x * 8 + 7) as u16),
+            ((y * 16) as u16, (y * 16 + 15) as u16),
+        );
+        ch.display(lcd);
     }
 
-    pub fn set_row_vals(&mut self, row: usize, s: &[u8]) {
+    pub fn set_char(&mut self, coords: (usize, usize), mut ch: Char) {
+        ch.mark_clogged();
+        self.cells[coords.1][coords.0] = ch;
+    }
+
+    pub fn set_row_chars(&mut self, row: usize, s: &[u8]) {
         for (&s, c) in s.iter().zip(self.cells[row].iter_mut()) {
             c.value = s;
             c.mark_clogged();
@@ -100,17 +109,12 @@ impl<const WIDTH: usize, const HEIGHT: usize> Term<WIDTH, HEIGHT> {
 
     pub fn display(&mut self, lcd: &mut impl Lcd) {
         for (i, row) in self.cells.iter_mut().enumerate() {
-            for (j, c) in row.iter_mut().enumerate() {
-                if c.is_flushed() {
+            for (j, ch) in row.iter_mut().enumerate() {
+                if ch.is_flushed() {
                     continue;
                 }
-                // TODO: white border
-                lcd.prepare_window(
-                    ((j * 8) as u16, (j * 8 + 7) as u16),
-                    ((i * 16) as u16, (i * 16 + 15) as u16),
-                );
-                c.write_foreground(lcd);
-                c.mark_flushed();
+                Self::display_immediately(lcd, (j, i), *ch);
+                ch.mark_flushed();
             }
         }
     }
