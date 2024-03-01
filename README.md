@@ -15,7 +15,7 @@ to be a terminal (**not** ANSI). We want:
   direction and have it scroll pixel by pixel*
 - [x] Easy interface to drivers, for basically any rgb565 display.
   - [x] With out of the box driver for ST7789
-- [ ] low memory footprint
+- [x] low memory footprint
 
 *I only plan for this to be added as a "scroll by a char" option. This
 means that the terminal should always be aligned to a char boundary, and

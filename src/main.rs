@@ -27,7 +27,7 @@ use lcd::Rgb16;
 
 use crate::{
     lcd::Lcd,
-    term::{Char, Term},
+    term::{Char, ScrollableRow, Term},
 };
 
 /// esp_println, but maybe I want to make it write errors?
@@ -61,6 +61,8 @@ fn main2() -> ! {
     lcd.init(&mut delay);
     lcd.set_bl_high();
 
+    let mut term = Term::<30, 15>::new();
+
     lcd.prepare_window((0, 240), (0, 240));
     for _ in 0..=240 {
         lcd.write_rgb(&[Rgb16::WHITE; 240]);
@@ -70,11 +72,12 @@ fn main2() -> ! {
         &b"if Term::<30, 15>::works(t) {"[..],
         &b"    println!(\"yippee!\");"[..],
         &b"}"[..],
+        &b""[..],
+        &b"01234567890123456789"[..],
     ];
     for (i, msg) in msgs.iter().enumerate() {
         for (j, &b) in msg.iter().enumerate() {
-            Term::<30, 15>::display_immediately(
-                &mut lcd,
+            term.set_char(
                 (j, i),
                 Char {
                     value: b,
@@ -85,8 +88,17 @@ fn main2() -> ! {
         }
     }
 
+    term.display(&mut lcd);
+
     println!("here");
-    loop {}
+
+    let mut region = ScrollableRow::new(5, 0, 20, Rgb16::BLACK, Rgb16::from_rgb(255, 0, 0));
+
+    loop {
+        region.shift(-1);
+        region.display(b"This is a scrolling message... How spooOOky! | ", &mut lcd);
+        delay.delay_ms(20u32);
+    }
 }
 
 #[entry]

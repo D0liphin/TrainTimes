@@ -4,9 +4,6 @@ use crate::types::OutputPinV2;
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-/// This should be opaque -- we actually disallow 0xffff as a value, which
-/// we reserve as "transparent". `0b11111_111111_11110` is black. The
-/// original color does not exist.
 pub struct Rgb16(u8, u8);
 
 impl From<u16> for Rgb16 {
@@ -18,26 +15,21 @@ impl From<u16> for Rgb16 {
 
 impl Debug for Rgb16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:b}", u16::from_be_bytes([self.0, self.1]))
+        // write!(f, "{:b}", u16::from_be_bytes([self.0, self.1]))
+        write!(f, "{}", if self == &Rgb16::BLACK { ' ' } else { '#' })
     }
 }
 
 impl Rgb16 {
-    pub const IGNORE: Self = Self(0xff, 0xff - 1);
     pub const BLACK: Self = Self(0xff, 0xff);
     pub const WHITE: Self = Self(0x00, 0x00);
 
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        let r: u16 = (0b11111 * r as u16 / 255) << 11;
-        let g: u16 = (0b111111 * g as u16 / 255) << 5;
+        let g: u16 = (0b11111 * r as u16 / 255) << 11;
+        let r: u16 = (0b111111 * g as u16 / 255) << 5;
         let b: u16 = 0b11111 * b as u16 / 255;
 
-        let this = Self::from(r | g | b);
-        if this == Self::IGNORE {
-            Self::BLACK
-        } else {
-            this
-        }
+        Self::from(r | g | b)
     }
 
     pub fn as_bytes(buf: &[Rgb16]) -> &[u8] {
