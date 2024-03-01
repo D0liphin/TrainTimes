@@ -204,8 +204,12 @@ impl ScrollableRow {
 
         // we might truncate the first char (and the last) this is the first
         let offset = self.shift % CHAR_WIDTH as isize;
-        let startbit = if self.shift <= 0 { -offset } else { todo!() } as usize;
-        let endbit = if self.shift <= 0 { CHAR_WIDTH } else { todo!() };
+        let startbit = if self.shift <= 0 {
+            -offset
+        } else {
+            CHAR_WIDTH as isize - offset
+        } as usize;
+        let endbit = CHAR_WIDTH;
         let truncated_width = (endbit - startbit) as u16;
 
         // print the first char truncated
@@ -220,16 +224,48 @@ impl ScrollableRow {
             let ch = text[(startch + i) % text.len()];
             let x_start = x_start + truncated_width + (CHAR_WIDTH as u16) * (i as u16 - 1);
             lcd.prepare_window((x_start, x_start + CHAR_WIDTH as u16 - 1), (y_start, y_end));
-            // println!("\nprinting {} = {ch}", (startch + i) % text.len());
-            // println!(
-            //     "  window = {:?}",
-            //     ((x_start, x_start + CHAR_WIDTH as u16 - 1), (y_start, y_end),)
-            // );
             letter = [self.background; CHAR_WIDTH * CHAR_HEIGHT];
             lcd.write_rgb(&letter);
             self.new_char(ch)
                 .get_letter_pixels(&mut letter, 0..CHAR_WIDTH);
             lcd.write_rgb(&letter);
         }
+
+        // we want to print the start of the last character
+        let (startbit, endbit) = (0, startbit);
+
+        // We need to do this, because preparing a window requires at least 1
+        // column to write to ((x, x), (y1, y2)) is for 1 column, we can't do
+        // ((x, x - 1), (y1, y2))
+        if offset == 0 {
+            return;
+        }
+
+        // wipe area we will be using
+        letter = [self.background; CHAR_WIDTH * CHAR_HEIGHT];
+
+        let rem_width = CHAR_WIDTH as u16 - truncated_width;
+        let x_start = x_start + truncated_width + (CHAR_WIDTH as u16) * (self.width as u16 - 1);
+        lcd.prepare_window((x_start, x_start + rem_width - 1), (y_start, y_end));
+        lcd.write_rgb(&letter[..rem_width as usize * CHAR_HEIGHT]);
+
+        let ch = text[(startch + self.width) % text.len()];
+        self.new_char(ch)
+            .get_letter_pixels(&mut letter, startbit..endbit);
+        lcd.write_rgb(&letter[..rem_width as usize * CHAR_HEIGHT]);
+
+        // for i in (0..rem_width as usize * 16).step_by(rem_width as usize) {
+        //     println!("{:?}", &letter[i..i + rem_width as usize]);
+        // }
+        // println!("char = {:?}", char::from_u32(ch as _));
+        // println!("  [{startbit}..{endbit}]");
+        // println!(
+        //     "  window = {:?}",
+        //     ((x_start, x_start + rem_width - 1), (y_start, y_end))
+        // );
+        // println!(
+        //     "  wrote {} pixels",
+        //     &letter[..rem_width as usize * CHAR_HEIGHT].len()
+        // );
     }
 }

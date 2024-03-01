@@ -95,7 +95,7 @@ fn main2() -> ! {
     let mut region = ScrollableRow::new(5, 0, 20, Rgb16::BLACK, Rgb16::from_rgb(255, 0, 0));
 
     loop {
-        region.shift(-1);
+        region.shift(-2);
         region.display(b"This is a scrolling message... How spooOOky! | ", &mut lcd);
         delay.delay_ms(20u32);
     }

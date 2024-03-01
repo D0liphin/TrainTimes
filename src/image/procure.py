@@ -8,15 +8,13 @@ PNG_FILES = [f"{IMAGE_DIR}/{file}" for file in all_files if file.endswith(".png"
 
 
 def to_rgb16(rgba: tuple[int, int, int, int]) -> tuple[int, int]:
-    r, g, b, a = rgba
-    if a == 0:
-        return (0xFF, 0xFF - 1)  # IGNORE
+    r, g, b, _ = rgba
+    r_565 = r >> 3
+    g_565 = g >> 2
+    b_565 = b >> 3
 
-    g = (0b11111 * g // 255) << 11
-    r = (0b111111 * r // 255) << 5
-    b = 0b11111 * b // 255
-
-    rgb = r | g | b
+    inverted = (r_565 << 11) | (g_565 << 5) | b_565
+    rgb = inverted ^ 0xFFFF
 
     return ((rgb >> 8) % 255, rgb & 0xFF)
 

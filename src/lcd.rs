@@ -25,11 +25,13 @@ impl Rgb16 {
     pub const WHITE: Self = Self(0x00, 0x00);
 
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        let g: u16 = (0b11111 * r as u16 / 255) << 11;
-        let r: u16 = (0b111111 * g as u16 / 255) << 5;
-        let b: u16 = 0b11111 * b as u16 / 255;
+        let r_565 = r as u16 >> 3;
+        let g_565 = g as u16 >> 2;
+        let b_565 = b as u16 >> 3;
 
-        Self::from(r | g | b)
+        let inverted = (r_565 << 11) | (g_565 << 5) | b_565;
+
+        Self::from(inverted ^ 0xffff)
     }
 
     pub fn as_bytes(buf: &[Rgb16]) -> &[u8] {
